@@ -77,23 +77,79 @@ class VarianceAdaptor(nn.Module):
             n_bins, model_config["transformer"]["encoder_hidden"]
         )
 
-    def get_pitch_embedding(self, x, target, mask, control):
+    def get_pitch_embedding(self, x, target, mask, control, key_indices):
         prediction = self.pitch_predictor(x, mask)
+        # --- Enhancement: Support dynamic pitch control for keyword/emotion intervals ---
+        # For each interval in key_indices, apply a smooth dynamic scaling (e.g., cosine window)
+        # and buffer smoothing at the boundaries to reduce artifacts/clicks.
+        def smooth_dynamic_curve(N, control):
+            if N == 1:
+                return np.array([control])
+            x = np.linspace(0, np.pi, N)
+            curve = (1 - np.cos(x)) / 2  # 0~1~0
+            return 1.0 + (control - 1.0) * curve  # 1.0~control~1.0
         if target is not None:
             embedding = self.pitch_embedding(torch.bucketize(target, self.pitch_bins))
         else:
-            prediction = prediction * control
+            seq_len = prediction.shape[1]
+            for start_idx, end_idx in key_indices:
+                N = end_idx - start_idx + 1
+                dynamic = smooth_dynamic_curve(N, control)
+                buffer = 2  # --- Enhancement: buffer zone for smooth transition ---
+                # Pre-buffer smoothing (only if not out of bounds)
+                if start_idx - buffer >= 0:
+                    pre_val = prediction[0, start_idx - buffer].item()
+                    for i in range(buffer):
+                        alpha = (i + 1) / (buffer + 1)
+                        interp = (1 - alpha) * pre_val + alpha * dynamic[0]
+                        prediction[0, start_idx - buffer + i] = interp
+                # Post-buffer smoothing
+                if end_idx + buffer < seq_len:
+                    post_val = prediction[0, end_idx + buffer].item()
+                    for i in range(buffer):
+                        alpha = (i + 1) / (buffer + 1)
+                        interp = (1 - alpha) * dynamic[-1] + alpha * post_val
+                        prediction[0, end_idx + 1 + i] = interp
+                # Apply dynamic scaling inside the interval
+                dynamic = torch.from_numpy(dynamic).to(prediction.device, dtype=prediction.dtype)
+                prediction[0, start_idx:end_idx+1] *= dynamic
             embedding = self.pitch_embedding(
                 torch.bucketize(prediction, self.pitch_bins)
             )
         return prediction, embedding
 
-    def get_energy_embedding(self, x, target, mask, control):
+    def get_energy_embedding(self, x, target, mask, control, key_indices):
         prediction = self.energy_predictor(x, mask)
+        # --- Enhancement: Support dynamic energy control for keyword/emotion intervals ---
+        # Same logic as pitch: smooth dynamic scaling and buffer smoothing for each interval.
+        def smooth_dynamic_curve(N, control):
+            if N == 1:
+                return np.array([control])
+            x = np.linspace(0, np.pi, N)
+            curve = (1 - np.cos(x)) / 2  # 0~1~0
+            return 1.0 + (control - 1.0) * curve  # 1.0~control~1.0
         if target is not None:
             embedding = self.energy_embedding(torch.bucketize(target, self.energy_bins))
         else:
-            prediction = prediction * control
+            seq_len = prediction.shape[1]
+            for start_idx, end_idx in key_indices:
+                N = end_idx - start_idx + 1
+                dynamic = smooth_dynamic_curve(N, control)
+                buffer = 2
+                if start_idx - buffer >= 0:
+                    pre_val = prediction[0, start_idx - buffer].item()
+                    for i in range(buffer):
+                        alpha = (i + 1) / (buffer + 1)
+                        interp = (1 - alpha) * pre_val + alpha * dynamic[0]
+                        prediction[0, start_idx - buffer + i] = interp
+                if end_idx + buffer < seq_len:
+                    post_val = prediction[0, end_idx + buffer].item()
+                    for i in range(buffer):
+                        alpha = (i + 1) / (buffer + 1)
+                        interp = (1 - alpha) * dynamic[-1] + alpha * post_val
+                        prediction[0, end_idx + 1 + i] = interp
+                dynamic = torch.from_numpy(dynamic).to(prediction.device, dtype=prediction.dtype)
+                prediction[0, start_idx:end_idx+1] *= dynamic
             embedding = self.energy_embedding(
                 torch.bucketize(prediction, self.energy_bins)
             )
@@ -111,17 +167,25 @@ class VarianceAdaptor(nn.Module):
         p_control=1.0,
         e_control=1.0,
         d_control=1.0,
+        key_indices=None,
     ):
+        # --- Enhancement: Accept key_indices for local interval control ---
+        # If key_indices is None, use an empty list (no interval control)
+        if key_indices is None:
+            key_indices = []
+            print('No key_indices provided; using global control only.')
 
         log_duration_prediction = self.duration_predictor(x, src_mask)
         if self.pitch_feature_level == "phoneme_level":
+            # --- Enhancement: Pass key_indices to pitch embedding for interval control ---
             pitch_prediction, pitch_embedding = self.get_pitch_embedding(
-                x, pitch_target, src_mask, p_control
+                x, pitch_target, src_mask, p_control, key_indices
             )
             x = x + pitch_embedding
         if self.energy_feature_level == "phoneme_level":
+            # --- Enhancement: Pass key_indices to energy embedding for interval control ---
             energy_prediction, energy_embedding = self.get_energy_embedding(
-                x, energy_target, src_mask, p_control
+                x, energy_target, src_mask, e_control, key_indices
             )
             x = x + energy_embedding
 
@@ -143,7 +207,7 @@ class VarianceAdaptor(nn.Module):
             x = x + pitch_embedding
         if self.energy_feature_level == "frame_level":
             energy_prediction, energy_embedding = self.get_energy_embedding(
-                x, energy_target, mel_mask, p_control
+                x, energy_target, mel_mask, e_control
             )
             x = x + energy_embedding
 
@@ -294,3 +358,4 @@ class Conv(nn.Module):
         x = x.contiguous().transpose(1, 2)
 
         return x
+        
