@@ -63,6 +63,11 @@ python synthesize.py \
   --emotion_level strong
 ```
 
+## Reference
+
+Some of the improvements and ideas in this repository were inspired by or referenced from the work at [Weihaohaoao/Synthesis-sarcastic-voice](https://github.com/Weihaohaoao/Synthesis-sarcastic-voice/tree/main).
+
+Please check out their repository for related approaches and further inspiration.
 ---
 For more details, see the code comments in each file or contact the maintainer.
 
