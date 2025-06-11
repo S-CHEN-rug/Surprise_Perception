@@ -1,3 +1,71 @@
+This repository extends the original FastSpeech2 with fine-grained, interval-based control for pitch and energy, emotion-driven synthesis, and a series of improvements for more natural and expressive TTS.
+
+## Key Improvements Over Original FastSpeech2
+
+### 1. Emotion/Keyword Interval Control
+- **Support for emotion or keyword intervals**: The model can now accept `key_indices` marking intervals (e.g., emotional keywords) in the input text.
+- **Local pitch/energy control**: Instead of only global scaling, pitch and energy can be dynamically controlled within specified intervals, enabling expressive, context-aware prosody.
+
+### 2. Dynamic and Smooth Prosody Modification
+- **Dynamic scaling curves**: Within each interval, pitch/energy can be modulated using smooth curves (e.g., cosine window), rather than abrupt or static changes.
+- **Buffer zone smoothing**: At the boundaries of each interval, a buffer zone is used for weighted interpolation, reducing clicks and unnatural transitions.
+- **Global mel-spectrogram smoothing**: 1D convolutional smoothing is applied to the mel-spectrogram before vocoder inference for further quality improvement.
+
+### 3. Emotion Detection and Parameterization
+- **GPT-based keyword detection**: The system can automatically detect up to three emotion-related keywords in the input text using OpenAI GPT-4o, supporting both English and Mandarin.
+- **Emotion type and strength**: New command-line arguments (`--emotion_type`, `--emotion_level`) allow users to specify the type (e.g., surprise, sarcasm, anger, joy) and strength (mild, moderate, strong) of emotion, which are mapped to pitch/energy control values.
+- **Manual keyword override**: Users can also manually specify keywords for interval control via the `--keys` argument.
+
+### 4. Enhanced Command-Line Interface
+- **New arguments**:
+  - `--emotion_type`: Set the emotion type for keyword detection and prosody control.
+  - `--emotion_level`: Set the strength of emotion (affecting pitch/energy scaling).
+  - `--keys`: Manually specify keywords for interval-based control.
+- **Backward compatibility**: All new features are optional; the system can still run in standard FastSpeech2 mode.
+
+### 5. Code Structure and Documentation
+- **Extensive English comments**: All new features and changes are clearly documented in the code for easy understanding and further development.
+- **Security best practices**: Sensitive information such as API keys is no longer hardcoded; users are instructed to set their own keys via environment variables.
+
+## Affected Files and Main Changes
+
+- **synthesize.py**
+  - Adds GPT-based emotion keyword detection and interval extraction.
+  - Supports new CLI arguments for emotion type, level, and manual keywords.
+  - Passes `key_indices` and emotion parameters through the synthesis pipeline.
+
+- **tools.py**
+  - Adds `smooth_mel_spectrogram` for global mel smoothing.
+  - Adds `apply_transition_smooth` for buffer zone smoothing at interval boundaries.
+  - Modifies `synth_samples` to support and visualize interval-based control.
+
+- **modules.py**
+  - `VarianceAdaptor` supports `key_indices` for local, dynamic pitch/energy control.
+  - Implements smooth dynamic scaling and buffer smoothing for each interval.
+
+- **fastspeech2.py**
+  - The model's `forward` method now accepts and propagates `key_indices` for interval-based control.
+
+## Usage Notes
+- **API Key**: For GPT-based keyword detection, set your OpenAI API key as an environment variable (`OPENAI_API_KEY`). Do not hardcode your key in the code.
+- **Compatibility**: All new features are backward compatible. If you do not use interval control or emotion arguments, the model behaves as standard FastSpeech2.
+
+## Example Command
+```bash
+python synthesize.py \
+  --restore_step 90000 \
+  --mode single \
+  --text "I just want something more exciting, not boring." \
+  --preprocess_config config/preprocess.yaml \
+  --model_config config/model.yaml \
+  --train_config config/train.yaml \
+  --emotion_type surprise \
+  --emotion_level strong
+```
+
+---
+For more details, see the code comments in each file or contact the maintainer.
+
 # FastSpeech 2 - PyTorch Implementation
 
 This is a PyTorch implementation of Microsoft's text-to-speech system [**FastSpeech 2: Fast and High-Quality End-to-End Text to Speech**](https://arxiv.org/abs/2006.04558v1). 
