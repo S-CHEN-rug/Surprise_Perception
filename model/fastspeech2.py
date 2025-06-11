@@ -16,7 +16,7 @@ class FastSpeech2(nn.Module):
     def __init__(self, preprocess_config, model_config):
         super(FastSpeech2, self).__init__()
         self.model_config = model_config
-
+        # self.key_indices=key_indices
         self.encoder = Encoder(model_config)
         self.variance_adaptor = VarianceAdaptor(preprocess_config, model_config)
         self.decoder = Decoder(model_config)
@@ -55,6 +55,7 @@ class FastSpeech2(nn.Module):
         p_control=1.0,
         e_control=1.0,
         d_control=1.0,
+        key_indices=None,
     ):
         src_masks = get_mask_from_lengths(src_lens, max_src_len)
         mel_masks = (
@@ -89,6 +90,7 @@ class FastSpeech2(nn.Module):
             p_control,
             e_control,
             d_control,
+            key_indices,
         )
 
         output, mel_masks = self.decoder(output, mel_masks)
@@ -108,3 +110,4 @@ class FastSpeech2(nn.Module):
             src_lens,
             mel_lens,
         )
+        
