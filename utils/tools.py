@@ -7,6 +7,7 @@ import numpy as np
 import matplotlib
 from scipy.io import wavfile
 from matplotlib import pyplot as plt
+import torch.nn as nn
 
 
 matplotlib.use("Agg")
@@ -106,6 +107,40 @@ def expand(values, durations):
     return np.array(out)
 
 
+def smooth_mel_spectrogram(mel, kernel_size=5):
+    """
+    Apply 1D convolutional smoothing to a mel-spectrogram along the time axis.
+
+    Args:
+        mel (torch.Tensor): Input mel-spectrogram of shape [B, n_mel, T],
+            where B is batch size, n_mel is the number of mel bands, and T is the number of frames.
+        kernel_size (int): Size of the convolution kernel (window). Typical values are 3 or 5.
+
+    Returns:
+        torch.Tensor: Smoothed mel-spectrogram, same shape as input.
+
+    This function performs a moving average smoothing on the mel-spectrogram
+    by applying a 1D convolution along the time axis for each mel band independently.
+    The convolution kernel is initialized as an averaging filter (all weights = 1/kernel_size).
+    This helps to reduce sharp transitions and artifacts in the generated mel-spectrogram.
+    """
+    padding = (kernel_size - 1) // 2
+    # Create a 1D convolution layer for smoothing, with one filter per mel band (grouped convolution)
+    conv = nn.Conv1d(
+        in_channels=mel.size(1),
+        out_channels=mel.size(1),
+        kernel_size=kernel_size,
+        groups=mel.size(1),  # Each mel band is convolved independently
+        bias=False,
+        padding=padding
+    )
+    # Initialize the convolution weights to perform averaging (moving average)
+    with torch.no_grad():
+        conv.weight[:] = 1.0 / kernel_size
+    conv = conv.to(mel.device)  # Ensure the convolution is on the same device as the input
+    return conv(mel)
+
+
 def synth_one_sample(targets, predictions, vocoder, model_config, preprocess_config):
 
     basename = targets[0][0]
@@ -162,8 +197,12 @@ def synth_one_sample(targets, predictions, vocoder, model_config, preprocess_con
 
 
 def synth_samples(targets, predictions, vocoder, model_config, preprocess_config, path):
-
     basenames = targets[0]
+    # --- Enhancement: Support for keyword interval smoothing ---
+    # If targets contain key_indices_list, use it for boundary smoothing of emotional keywords
+    key_indices_list = None
+    if len(targets) > 6:
+        key_indices_list = targets[6]
     for i in range(len(predictions[0])):
         basename = basenames[i]
         src_len = predictions[8][i].item()
@@ -180,6 +219,12 @@ def synth_samples(targets, predictions, vocoder, model_config, preprocess_config
             energy = expand(energy, duration)
         else:
             energy = predictions[3][i, :mel_len].detach().cpu().numpy()
+
+        # --- Enhancement: Apply transition smoothing to keyword intervals ---
+        # This reduces artifacts/clicks at emotional keyword boundaries
+        if key_indices_list is not None:
+            key_indices = key_indices_list[i]
+            mel_prediction = apply_transition_smooth(mel_prediction, key_indices, transition=3)
 
         with open(
             os.path.join(preprocess_config["path"]["preprocessed_path"], "stats.json")
@@ -199,7 +244,10 @@ def synth_samples(targets, predictions, vocoder, model_config, preprocess_config
 
     from .model import vocoder_infer
 
-    mel_predictions = predictions[1].transpose(1, 2)
+    # --- Enhancement: Apply global mel-spectrogram smoothing before vocoder ---
+    # This further reduces sharp transitions and improves audio quality
+    mel_predictions = predictions[1].transpose(1, 2)  # [B, n_mel, T]
+    mel_predictions = smooth_mel_spectrogram(mel_predictions, kernel_size=3)
     lengths = predictions[9] * preprocess_config["preprocessing"]["stft"]["hop_length"]
     wav_predictions = vocoder_infer(
         mel_predictions, vocoder, model_config, preprocess_config, lengths=lengths
@@ -315,3 +363,47 @@ def pad(input_ele, mel_max_length=None):
         out_list.append(one_batch_padded)
     out_padded = torch.stack(out_list)
     return out_padded
+
+
+def apply_transition_smooth(mel, key_indices, transition=3):
+    """
+    Apply weighted interpolation smoothing at the boundaries of keyword intervals in a mel-spectrogram.
+    This is a post-processing method to reduce abrupt changes (not neural network attention).
+
+    Args:
+        mel (Tensor or np.ndarray): Mel-spectrogram of shape [n_mel, T] (single sample),
+            where n_mel is the number of mel bands and T is the number of frames.
+        key_indices (list of tuple): List of (start, end) frame indices for each keyword interval.
+        transition (int): Length (in frames) of the transition (buffer) zone for smoothing. Typical values: 2~5.
+
+    Returns:
+        Smoothed mel-spectrogram, same shape as input.
+
+    For each keyword interval, this function linearly interpolates the mel values
+    in a buffer zone before and after the interval, making the transition into and out of the interval smoother.
+    This helps to reduce clicks or artifacts caused by abrupt changes in pitch/energy.
+    """
+    # If input is a torch.Tensor, clone to make a writable copy
+    if isinstance(mel, torch.Tensor):
+        mel = mel.clone()
+    else:
+        mel = mel.copy()
+    n_mel, T = mel.shape
+    for start, end in key_indices:
+        # Smooth the transition before the interval (pre-transition zone)
+        for i in range(transition):
+            idx = start - transition + i
+            if idx < 0:
+                continue
+            alpha = (i + 1) / (transition + 1)  # Interpolation weight increases from 0 to 1
+            # Weighted interpolation between the original frame and the interval start
+            mel[:, idx] = (1 - alpha) * mel[:, idx] + alpha * mel[:, start]
+        # Smooth the transition after the interval (post-transition zone)
+        for i in range(transition):
+            idx = end + 1 + i
+            if idx >= T:
+                break
+            alpha = (i + 1) / (transition + 1)
+            # Weighted interpolation between the interval end and the following frame
+            mel[:, idx] = (1 - alpha) * mel[:, end] + alpha * mel[:, idx]
+    return mel
